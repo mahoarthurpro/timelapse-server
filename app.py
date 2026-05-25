@@ -4,7 +4,13 @@ import os
 import requests
 import tempfile
 import shutil
+import logging
+import sys
+logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+logger = logging.getLogger(__name__)
 from pathlib import Path
+
+
 
 app = Flask(__name__)
 
@@ -29,7 +35,7 @@ def download_images(image_urls: list, folder: str) -> list:
         with open(filename, "wb") as f:
             f.write(response.content)
         paths.append(filename)
-        print(f"  ✅ Image {i+1}/{len(image_urls)} téléchargée")
+        logger.info(f"  ✅ Image {i+1}/{len(image_urls)} téléchargée")
     return paths
 
 
@@ -55,14 +61,14 @@ def create_timelapse(input_folder: str, output_path: str, fps: int, width: int, 
         output_path
     ]
 
-    print(f"  🎬 FFmpeg : {' '.join(cmd)}")
+    logger.info(f"  🎬 FFmpeg : {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
-        print(f"  ❌ Erreur FFmpeg : {result.stderr}")
+        logger.info(f"  ❌ Erreur FFmpeg : {result.stderr}")
         return False
 
-    print(f"  ✅ Vidéo créée : {output_path}")
+    logger.info(f"  ✅ Vidéo créée : {output_path}")
     return True
 
 
@@ -83,14 +89,14 @@ def upload_to_airtable(video_path: str, record_id: str, field_name: str) -> bool
         )
 
     if upload_response.status_code != 200:
-        print(f"  ❌ Erreur upload temporaire : {upload_response.text}")
+        logger.info(f"  ❌ Erreur upload temporaire : {upload_response.text}")
         return False
 
     # Convertir l'URL tmpfiles en URL directe
     tmp_url = upload_response.json()["data"]["url"].replace(
         "tmpfiles.org/", "tmpfiles.org/dl/"
     )
-    print(f"  📤 URL temporaire : {tmp_url}")
+    logger.info(f"  📤 URL temporaire : {tmp_url}")
 
     # Envoyer l'URL dans Airtable
     payload = {
@@ -101,10 +107,10 @@ def upload_to_airtable(video_path: str, record_id: str, field_name: str) -> bool
 
     response = requests.patch(url, headers=headers, json=payload)
     if response.status_code == 200:
-        print(f"  ✅ Vidéo envoyée dans Airtable (champ : {field_name})")
+        logger.info(f"  ✅ Vidéo envoyée dans Airtable (champ : {field_name})")
         return True
     else:
-        print(f"  ❌ Erreur Airtable : {response.text}")
+        logger.info(f"  ❌ Erreur Airtable : {response.text}")
         return False
 
 
@@ -143,7 +149,7 @@ def create_timelapse_endpoint():
     if not record_id:
         return jsonify({"error": "record_id manquant"}), 400
 
-    print(f"\n🚀 Timelapse démarré — {len(image_urls)} images, {fps} fps")
+    logger.info(f"\n🚀 Timelapse démarré — {len(image_urls)} images, {fps} fps")
 
     # Dossier temporaire pour les images et vidéos
     tmp_dir = tempfile.mkdtemp()
@@ -175,11 +181,11 @@ def create_timelapse_endpoint():
         else:
             results["9_16"] = "❌ Erreur"
 
-        print(f"\n✅ Terminé ! Résultats : {results}")
+        logger.info(f"\n✅ Terminé ! Résultats : {results}")
         return jsonify({"status": "success", "results": results}), 200
 
     except Exception as e:
-        print(f"\n❌ Erreur inattendue : {str(e)}")
+        logger.info(f"\n❌ Erreur inattendue : {str(e)}")
         return jsonify({"error": str(e)}), 500
 
     finally:
