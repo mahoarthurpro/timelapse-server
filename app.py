@@ -137,7 +137,23 @@ def create_timelapse_endpoint():
         logger.error("❌ Secret invalide")
         return jsonify({"error": "Non autorisé"}), 401
 
-    image_urls = data.get("images", [])
+raw_images = data.get("images", [])
+# Aplatir si Make envoie un tableau imbriqué
+image_urls = []
+for item in raw_images:
+    if isinstance(item, str):
+        image_urls.append(item)
+    elif isinstance(item, dict):
+        url = item.get("url") or item.get("thumbnails", {}).get("large", {}).get("url", "")
+        if url:
+            image_urls.append(url)
+    elif isinstance(item, list):
+        for sub in item:
+            if isinstance(sub, str):
+                image_urls.append(sub)
+            elif isinstance(sub, dict) and sub.get("url"):
+                image_urls.append(sub["url"])
+logger.info(f"URLs extraites: {len(image_urls)}")
     record_id = data.get("record_id", "")
     fps = int(data.get("fps", 5))
     field_16_9 = data.get("airtable_field_16_9", "Video Youtube")
