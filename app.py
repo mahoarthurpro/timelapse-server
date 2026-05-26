@@ -6,44 +6,59 @@ import tempfile
 import shutil
 import logging
 import sys
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+
+# Logging visible dans Railway Deploy Logs
+logging.basicConfig(stream=sys.stdout, level=logging.INFO, force=True)
 logger = logging.getLogger(__name__)
-from pathlib import Path
-
-
 
 app = Flask(__name__)
 
-# ============================================================
-# CONFIGURATION — modifie ces valeurs
-# ============================================================
-AIRTABLE_TOKEN = os.environ.get("AIRTABLE_TOKEN", "")       # Token Airtable
-AIRTABLE_BASE_ID = os.environ.get("AIRTABLE_BASE_ID", "")   # ID de ta base Airtable
-AIRTABLE_TABLE_NAME = os.environ.get("AIRTABLE_TABLE_NAME", "Timelapse")  # Nom de ta table
-WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "mon_secret_123")       # Clé secrète Make.com
-# ============================================================
+AIRTABLE_TOKEN = os.environ.get("AIRTABLE_TOKEN", "")
+AIRTABLE_BASE_ID = os.environ.get("AIRTABLE_BASE_ID", "")
+AIRTABLE_TABLE_NAME = os.environ.get("AIRTABLE_TABLE_NAME", "Timelapse")
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "mon_secret_123")
 
 
-def download_images(image_urls: list, folder: str) -> list:
-    """Télécharge les images depuis les URLs et les sauvegarde dans un dossier."""
+def download_images(image_urls, folder):
     paths = []
     for i, url in enumerate(image_urls):
-        ext = ".jpg"
-        filename = os.path.join(folder, f"frame_{i:05d}{ext}")
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        with open(filename, "wb") as f:
-            f.write(response.content)
-        paths.append(filename)
-        logger.info(f"  ✅ Image {i+1}/{len(image_urls)} téléchargée")
+        filename = os.path.join(folder, f"frame_{i:05d}.jpg")
+        try:
+            logger.info(f"Téléchargement image {i+1}/{len(image_urls)}: {url[:80]}")
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+            with open(filename, "wb") as f:
+                f.write(response.content)
+            size = os.path.getsize(filename)
+            logger.info(f"✅ Image {i+1} téléchargée ({size} bytes)")
+            paths.append(filename)
+        except Exception as e:
+            logger.error(f"❌ Erreur image {i+1}: {e}")
     return paths
 
 
-def create_timelapse(input_folder: str, output_path: str, fps: int, width: int, height: int) -> bool:
-    """Assemble les images en vidéo timelapse avec FFmpeg."""
-    input_pattern = os.path.join(input_folder, "frame_%05d.jpg")
-    
-    # Filtre pour redimensionner + remplir avec du noir si besoin (letterbox/pillarbox)
+def create_timelapse(input_folder, output_path, fps, width, height):
+    # Lister les fichiers réellement téléchargés
+    files = sorted([f for f in os.listdir(input_folder) if f.endswith('.jpg')])
+    logger.info(f"Fichiers trouvés: {len(files)}")
+
+    if len(files) == 0:
+        logger.error("❌ Aucun fichier image trouvé!")
+        return False
+
+    # Créer un fichier concat pour FFmpeg (plus fiable que le pattern)
+    concat_file = os.path.join(input_folder, "concat.txt")
+    with open(concat_file, "w") as f:
+        for fname in files:
+            fpath = os.path.join(input_folder, fname)
+            duration = 1.0 / fps
+            f.write(f"file '{fpath}'\n")
+            f.write(f"duration {duration}\n")
+        # Répéter la dernière frame pour éviter le bug de fin
+        if files:
+            fpath = os.path.join(input_folder, files[-1])
+            f.write(f"file '{fpath}'\n")
+
     vf_filter = (
         f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
         f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
@@ -51,152 +66,136 @@ def create_timelapse(input_folder: str, output_path: str, fps: int, width: int, 
 
     cmd = [
         "ffmpeg", "-y",
-        "-framerate", str(fps),
-        "-i", input_pattern,
+        "-f", "concat",
+        "-safe", "0",
+        "-i", concat_file,
         "-vf", vf_filter,
         "-c:v", "libx264",
-        "-crf", "18",               # Qualité (0=parfait, 51=mauvais, 18=excellent)
+        "-crf", "18",
         "-preset", "fast",
-        "-pix_fmt", "yuv420p",      # Compatible partout (YouTube, Instagram, TikTok)
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
         output_path
     ]
 
-    logger.info(f"  🎬 FFmpeg : {' '.join(cmd)}")
+    logger.info(f"Lancement FFmpeg pour {width}x{height}...")
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
-        logger.info(f"  ❌ Erreur FFmpeg : {result.stderr}")
+        logger.error(f"❌ Erreur FFmpeg: {result.stderr[-500:]}")
         return False
 
-    logger.info(f"  ✅ Vidéo créée : {output_path}")
-    return True
+    size = os.path.getsize(output_path)
+    logger.info(f"✅ Vidéo créée: {output_path} ({size} bytes)")
+    return size > 1000  # Vérifie que la vidéo n'est pas vide
 
 
-def upload_to_airtable(video_path: str, record_id: str, field_name: str) -> bool:
-    """Upload la vidéo dans un champ Airtable."""
-    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_NAME}/{record_id}"
-    headers = {
-        "Authorization": f"Bearer {AIRTABLE_TOKEN}",
-        "Content-Type": "application/json"
-    }
+def upload_to_airtable(video_path, record_id, field_name):
+    logger.info(f"Upload vers Airtable champ '{field_name}'...")
+    try:
+        with open(video_path, "rb") as f:
+            upload_response = requests.post(
+                "https://tmpfiles.org/api/v1/upload",
+                files={"file": f},
+                timeout=60
+            )
+        logger.info(f"tmpfiles status: {upload_response.status_code}")
+        if upload_response.status_code != 200:
+            logger.error(f"❌ Upload tmpfiles échoué: {upload_response.text}")
+            return False
 
-    # Airtable nécessite une URL publique pour les pièces jointes
-    # On upload d'abord sur un service temporaire (tmpfiles.org)
-    with open(video_path, "rb") as f:
-        upload_response = requests.post(
-            "https://tmpfiles.org/api/v1/upload",
-            files={"file": f}
+        tmp_url = upload_response.json()["data"]["url"].replace(
+            "tmpfiles.org/", "tmpfiles.org/dl/"
         )
+        logger.info(f"URL temporaire: {tmp_url}")
 
-    if upload_response.status_code != 200:
-        logger.info(f"  ❌ Erreur upload temporaire : {upload_response.text}")
-        return False
-
-    # Convertir l'URL tmpfiles en URL directe
-    tmp_url = upload_response.json()["data"]["url"].replace(
-        "tmpfiles.org/", "tmpfiles.org/dl/"
-    )
-    logger.info(f"  📤 URL temporaire : {tmp_url}")
-
-    # Envoyer l'URL dans Airtable
-    payload = {
-        "fields": {
-            field_name: [{"url": tmp_url}]
+        url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_NAME}/{record_id}"
+        headers = {
+            "Authorization": f"Bearer {AIRTABLE_TOKEN}",
+            "Content-Type": "application/json"
         }
-    }
+        payload = {"fields": {field_name: [{"url": tmp_url}]}}
+        response = requests.patch(url, headers=headers, json=payload, timeout=30)
 
-    response = requests.patch(url, headers=headers, json=payload)
-    if response.status_code == 200:
-        logger.info(f"  ✅ Vidéo envoyée dans Airtable (champ : {field_name})")
-        return True
-    else:
-        logger.info(f"  ❌ Erreur Airtable : {response.text}")
+        if response.status_code == 200:
+            logger.info(f"✅ Vidéo envoyée dans Airtable!")
+            return True
+        else:
+            logger.error(f"❌ Erreur Airtable: {response.status_code} - {response.text}")
+            return False
+    except Exception as e:
+        logger.error(f"❌ Exception upload: {e}")
         return False
 
 
-# ============================================================
-# ENDPOINT PRINCIPAL — appelé par Make.com
-# ============================================================
 @app.route("/create-timelapse", methods=["POST"])
 def create_timelapse_endpoint():
-    """
-    Make.com envoie un JSON avec :
-    {
-        "secret": "mon_secret_123",
-        "record_id": "recXXXXXXXX",        ← ID du record Airtable
-        "images": ["url1", "url2", ...],    ← URLs des photos
-        "fps": 24,                          ← Vitesse (images/seconde)
-        "airtable_field_16_9": "Video_YouTube",
-        "airtable_field_9_16": "Video_Reels"
-    }
-    """
-
     data = request.get_json()
+    logger.info(f"📨 Requête reçue")
 
-    # Vérification de la clé secrète
     if data.get("secret") != WEBHOOK_SECRET:
+        logger.error("❌ Secret invalide")
         return jsonify({"error": "Non autorisé"}), 401
 
     image_urls = data.get("images", [])
     record_id = data.get("record_id", "")
-    fps = int(data.get("fps", 24))
-    field_16_9 = data.get("airtable_field_16_9", "Video_YouTube")
-    field_9_16 = data.get("airtable_field_9_16", "Video_Reels")
+    fps = int(data.get("fps", 5))
+    field_16_9 = data.get("airtable_field_16_9", "Video Youtube")
+    field_9_16 = data.get("airtable_field_9_16", "Video Reels")
+
+    logger.info(f"📸 {len(image_urls)} images, {fps} fps, record: {record_id}")
 
     if not image_urls:
-        return jsonify({"error": "Aucune image fournie"}), 400
-
+        return jsonify({"error": "Aucune image"}), 400
     if not record_id:
         return jsonify({"error": "record_id manquant"}), 400
 
-    logger.info(f"\n🚀 Timelapse démarré — {len(image_urls)} images, {fps} fps")
+    # Filtrer les URLs vides
+    image_urls = [u for u in image_urls if u and u.startswith("http")]
+    logger.info(f"URLs valides: {len(image_urls)}")
 
-    # Dossier temporaire pour les images et vidéos
     tmp_dir = tempfile.mkdtemp()
+    results = {}
 
     try:
-        # 1. Téléchargement des images
-        print("\n📥 Téléchargement des images...")
-        download_images(image_urls, tmp_dir)
+        logger.info("📥 Téléchargement des images...")
+        downloaded = download_images(image_urls, tmp_dir)
+        logger.info(f"✅ {len(downloaded)} images téléchargées")
 
-        results = {}
+        if len(downloaded) < 2:
+            return jsonify({"error": f"Pas assez d'images: {len(downloaded)}"}), 400
 
-        # 2. Création timelapse 16:9 (YouTube — 1920x1080)
-        print("\n🎬 Création timelapse 16:9 (YouTube)...")
-        output_16_9 = os.path.join(tmp_dir, "timelapse_16_9.mp4")
-        ok_16_9 = create_timelapse(tmp_dir, output_16_9, fps, 1920, 1080)
-        if ok_16_9:
-            upload_to_airtable(output_16_9, record_id, field_16_9)
-            results["16_9"] = "✅ OK"
+        # 16:9 YouTube
+        logger.info("🎬 Création timelapse 16:9...")
+        out_16_9 = os.path.join(tmp_dir, "timelapse_16_9.mp4")
+        if create_timelapse(tmp_dir, out_16_9, fps, 1920, 1080):
+            upload_to_airtable(out_16_9, record_id, field_16_9)
+            results["16_9"] = "✅"
         else:
-            results["16_9"] = "❌ Erreur"
+            results["16_9"] = "❌"
 
-        # 3. Création timelapse 9:16 (Instagram Reels / TikTok — 1080x1920)
-        print("\n🎬 Création timelapse 9:16 (Reels/TikTok)...")
-        output_9_16 = os.path.join(tmp_dir, "timelapse_9_16.mp4")
-        ok_9_16 = create_timelapse(tmp_dir, output_9_16, fps, 1080, 1920)
-        if ok_9_16:
-            upload_to_airtable(output_9_16, record_id, field_9_16)
-            results["9_16"] = "✅ OK"
+        # 9:16 Reels
+        logger.info("🎬 Création timelapse 9:16...")
+        out_9_16 = os.path.join(tmp_dir, "timelapse_9_16.mp4")
+        if create_timelapse(tmp_dir, out_9_16, fps, 1080, 1920):
+            upload_to_airtable(out_9_16, record_id, field_9_16)
+            results["9_16"] = "✅"
         else:
-            results["9_16"] = "❌ Erreur"
+            results["9_16"] = "❌"
 
-        logger.info(f"\n✅ Terminé ! Résultats : {results}")
+        logger.info(f"🏁 Terminé: {results}")
         return jsonify({"status": "success", "results": results}), 200
 
     except Exception as e:
-        logger.info(f"\n❌ Erreur inattendue : {str(e)}")
+        logger.error(f"❌ Erreur: {e}")
         return jsonify({"error": str(e)}), 500
-
     finally:
-        # Nettoyage du dossier temporaire
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 @app.route("/health", methods=["GET"])
 def health():
-    """Endpoint pour vérifier que le serveur tourne."""
-    return jsonify({"status": "ok", "message": "Serveur timelapse opérationnel ✅"}), 200
+    return jsonify({"status": "ok"}), 200
 
 
 if __name__ == "__main__":
