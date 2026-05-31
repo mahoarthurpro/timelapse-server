@@ -19,7 +19,20 @@ def get_job_dir(record_id):
     return d
 
 def create_timelapse(job_dir, output_path, fps, width, height):
-    files = sorted([f for f in os.listdir(job_dir) if f.startswith("frame_") and f.endswith(".jpg")])
+    # Trier par nom original (date+heure) stocké dans les métadonnées
+meta_files = []
+for f in os.listdir(job_dir):
+    if f.startswith("frame_") and f.endswith(".jpg"):
+        meta_path = f.replace(".jpg", ".name")
+        name_path = os.path.join(job_dir, meta_path)
+        if os.path.exists(name_path):
+            with open(name_path) as nf:
+                original_name = nf.read().strip()
+            meta_files.append((original_name, f))
+        else:
+            meta_files.append((f, f))
+meta_files.sort(key=lambda x: x[0])
+files = [x[1] for x in meta_files]
     logger.info(f"Assemblage {len(files)} images en {width}x{height}")
     if len(files) < 2:
         logger.error(f"Pas assez d images: {len(files)}")
@@ -66,6 +79,11 @@ def upload_to_airtable(video_path, record_id, field_name):
 
 @app.route("/add-image", methods=["POST"])
 def add_image():
+    # Sauvegarder le nom original pour trier par date+heure
+original_name = data.get("file_name", f"frame_{image_index:05d}")
+name_path = os.path.join(job_dir, f"frame_{image_index:05d}.name")
+with open(name_path, "w") as f:
+    f.write(original_name)
     data = request.get_json()
     if data.get("secret") != WEBHOOK_SECRET:
         return jsonify({"error": "Non autorise"}), 401
