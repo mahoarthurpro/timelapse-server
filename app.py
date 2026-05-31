@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-import subprocess, os, requests, shutil, logging, sys, json
+import subprocess, os, requests, shutil, logging, sys
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, force=True)
 logger = logging.getLogger(__name__)
@@ -19,45 +19,59 @@ def get_job_dir(record_id):
     return d
 
 def create_timelapse(job_dir, output_path, fps, width, height):
-    # Trier par nom original (date+heure) stocké dans les métadonnées
-meta_files = []
-for f in os.listdir(job_dir):
-    if f.startswith("frame_") and f.endswith(".jpg"):
-        meta_path = f.replace(".jpg", ".name")
-        name_path = os.path.join(job_dir, meta_path)
-        if os.path.exists(name_path):
-            with open(name_path) as nf:
-                original_name = nf.read().strip()
-            meta_files.append((original_name, f))
-        else:
-            meta_files.append((f, f))
-meta_files.sort(key=lambda x: x[0])
-files = [x[1] for x in meta_files]
-    logger.info(f"Assemblage {len(files)} images en {width}x{height}")
+    # Récupérer les fichiers avec leur nom original pour trier par date+heure
+    meta_files = []
+    for f in os.listdir(job_dir):
+        if f.startswith("frame_") and f.endswith(".jpg"):
+            name_path = os.path.join(job_dir, f.replace(".jpg", ".name"))
+            if os.path.exists(name_path):
+                with open(name_path) as nf:
+                    original_name = nf.read().strip()
+                meta_files.append((original_name, f))
+            else:
+                meta_files.append((f, f))
+
+    # Tri par nom original (contient date+heure ex: 20260525_101440.jpg)
+    meta_files.sort(key=lambda x: x[0])
+    files = [x[1] for x in meta_files]
+
+    logger.info(f"Assemblage {len(files)} images triees par date, {width}x{height}")
     if len(files) < 2:
         logger.error(f"Pas assez d images: {len(files)}")
         return False
+
+    # Log de l'ordre pour verification
+    for i, (orig, frame) in enumerate(meta_files[:5]):
+        logger.info(f"  {i+1}. {orig} -> {frame}")
+    if len(meta_files) > 5:
+        logger.info(f"  ... ({len(meta_files)} images au total)")
+
     concat_file = os.path.join(job_dir, f"concat_{width}.txt")
     with open(concat_file, "w") as f:
         for fname in files:
             fpath = os.path.join(job_dir, fname)
             f.write(f"file '{fpath}'\n")
             f.write(f"duration {1.0/fps}\n")
+        # Repeter la derniere frame pour eviter bug FFmpeg
         f.write(f"file '{os.path.join(job_dir, files[-1])}'\n")
-    vf = f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
+
+    vf = (f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+          f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black")
     cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_file,
            "-vf", vf, "-c:v", "libx264", "-crf", "18", "-preset", "fast",
            "-pix_fmt", "yuv420p", "-movflags", "+faststart", output_path]
+
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        logger.error(f"FFmpeg: {result.stderr[-300:]}")
+        logger.error(f"FFmpeg erreur: {result.stderr[-300:]}")
         return False
+
     size = os.path.getsize(output_path)
     logger.info(f"Video creee: {size} bytes")
     return size > 1000
 
 def upload_to_airtable(video_path, record_id, field_name):
-    logger.info(f"Upload champ {field_name}")
+    logger.info(f"Upload champ '{field_name}'...")
     try:
         with open(video_path, "rb") as f:
             r = requests.post("https://tmpfiles.org/api/v1/upload", files={"file": f}, timeout=120)
@@ -65,25 +79,22 @@ def upload_to_airtable(video_path, record_id, field_name):
             logger.error(f"tmpfiles erreur: {r.text}")
             return False
         tmp_url = r.json()["data"]["url"].replace("tmpfiles.org/", "tmpfiles.org/dl/")
+        logger.info(f"URL: {tmp_url}")
         url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_NAME}/{record_id}"
         headers = {"Authorization": f"Bearer {AIRTABLE_TOKEN}", "Content-Type": "application/json"}
-        r2 = requests.patch(url, headers=headers, json={"fields": {field_name: [{"url": tmp_url}]}}, timeout=30)
+        r2 = requests.patch(url, headers=headers,
+                           json={"fields": {field_name: [{"url": tmp_url}]}}, timeout=30)
         if r2.status_code == 200:
             logger.info(f"Airtable OK!")
             return True
-        logger.error(f"Airtable: {r2.text}")
+        logger.error(f"Airtable erreur: {r2.text}")
         return False
     except Exception as e:
-        logger.error(f"Exception: {e}")
+        logger.error(f"Exception upload: {e}")
         return False
 
 @app.route("/add-image", methods=["POST"])
 def add_image():
-    # Sauvegarder le nom original pour trier par date+heure
-original_name = data.get("file_name", f"frame_{image_index:05d}")
-name_path = os.path.join(job_dir, f"frame_{image_index:05d}.name")
-with open(name_path, "w") as f:
-    f.write(original_name)
     data = request.get_json()
     if data.get("secret") != WEBHOOK_SECRET:
         return jsonify({"error": "Non autorise"}), 401
@@ -95,32 +106,51 @@ with open(name_path, "w") as f:
     fps = int(data.get("fps", 5))
     field_16_9 = data.get("airtable_field_16_9", "Video Youtube")
     field_9_16 = data.get("airtable_field_9_16", "Video Reels")
+    file_name = data.get("file_name", f"frame_{image_index:05d}.jpg")
 
-    logger.info(f"Image {image_index}/{total_images} record={record_id}")
+    logger.info(f"Image {image_index}/{total_images} | {file_name} | record={record_id}")
     job_dir = get_job_dir(record_id)
 
+    # Telecharger la photo
     try:
         r = requests.get(image_url, timeout=30)
         r.raise_for_status()
-        with open(os.path.join(job_dir, f"frame_{image_index:05d}.jpg"), "wb") as f:
+        frame_path = os.path.join(job_dir, f"frame_{image_index:05d}.jpg")
+        with open(frame_path, "wb") as f:
             f.write(r.content)
-        logger.info(f"Image {image_index} OK ({len(r.content)} bytes)")
+
+        # Sauvegarder le nom original pour trier par date+heure
+        name_path = os.path.join(job_dir, f"frame_{image_index:05d}.name")
+        with open(name_path, "w") as f:
+            f.write(file_name)
+
+        logger.info(f"Image {image_index} sauvegardee ({len(r.content)} bytes) -> tri: {file_name}")
     except Exception as e:
         logger.error(f"Erreur download: {e}")
         return jsonify({"error": str(e)}), 500
 
+    # Derniere image -> creer le timelapse
     if image_index >= total_images:
-        logger.info(f"Derniere image! Creation timelapse...")
+        logger.info(f"Derniere image recue! Creation du timelapse...")
         results = {}
+
         out_169 = os.path.join(job_dir, "tl_169.mp4")
         out_916 = os.path.join(job_dir, "tl_916.mp4")
+
         if create_timelapse(job_dir, out_169, fps, 1920, 1080):
             upload_to_airtable(out_169, record_id, field_16_9)
             results["16_9"] = "ok"
+        else:
+            results["16_9"] = "erreur"
+
         if create_timelapse(job_dir, out_916, fps, 1080, 1920):
             upload_to_airtable(out_916, record_id, field_9_16)
             results["9_16"] = "ok"
+        else:
+            results["9_16"] = "erreur"
+
         shutil.rmtree(job_dir, ignore_errors=True)
+        logger.info(f"Termine: {results}")
         return jsonify({"status": "done", "results": results}), 200
 
     return jsonify({"status": "saved", "progress": f"{image_index}/{total_images}"}), 200
