@@ -33,7 +33,20 @@ def create_timelapse(job_dir, output_path, fps, width, height):
 
     # Tri par nom original (contient date+heure ex: 20260525_101440.jpg)
     meta_files.sort(key=lambda x: x[0])
-    files = [x[1] for x in meta_files]
+    # Après meta_files.sort(...)
+files = [x[1] for x in meta_files]
+
+# Renuméroter séquentiellement
+logger.info("Renumérotation des fichiers...")
+new_files = []
+for i, fname in enumerate(files):
+    old_path = os.path.join(job_dir, fname)
+    new_name = f"seq_{i:05d}.jpg"
+    new_path = os.path.join(job_dir, new_name)
+    os.rename(old_path, new_path)
+    new_files.append(new_name)
+files = new_files
+logger.info(f"Renumérotation terminée: {len(files)} fichiers")
 
     logger.info(f"Assemblage {len(files)} images triees par date, {width}x{height}")
     if len(files) < 2:
