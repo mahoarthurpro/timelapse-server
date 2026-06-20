@@ -54,6 +54,14 @@ def create_timelapse(job_dir, output_path, fps, width, height):
             f.write(f"duration {1.0/fps}\n")
         # Repeter la derniere frame pour eviter bug FFmpeg
         f.write(f"file '{os.path.join(job_dir, files[-1])}'\n")
+        # ← AJOUTE CES LIGNES ICI
+    logger.info(f"FPS reçu: {fps}, durée par frame: {1.0/fps}")
+    logger.info(f"Contenu concat (3 premières lignes):")
+    with open(concat_file) as f:
+        lines = f.readlines()
+        for line in lines[:6]:
+            logger.info(f"  {line.strip()}")
+    # ← FIN DE L'AJOUT
 
     vf = (f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
           f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black")
