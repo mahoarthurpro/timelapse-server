@@ -103,7 +103,10 @@ def add_image():
     image_url = data.get("image_url", "")
     image_index = int(data.get("image_index", 1))
     total_images = int(data.get("total_images", 1))
-    fps = int(data.get("fps", 5))
+    fps = int(data.get("fps", 5)) 
+    if fps <= 0:     
+        fps = 5 
+    logger.info(f"FPS utilisé: {fps}")
     field_16_9 = data.get("airtable_field_16_9", "Video Youtube")
     field_9_16 = data.get("airtable_field_9_16", "Video Reels")
     file_name = data.get("file_name", f"frame_{image_index:05d}.jpg")
