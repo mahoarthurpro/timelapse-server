@@ -56,7 +56,7 @@ def create_timelapse(job_dir, output_path, fps, width, height):
         old_path = os.path.join(job_dir, fname)
         new_name = f"seq_{i:05d}.jpg"
         new_path = os.path.join(job_dir, new_name)
-        os.rename(old_path, new_path)
+        shutil.copy2(old_path, new_path)
         new_files.append(new_name)
     files = new_files
     logger.info(f"Renumerotation terminee: {len(files)} fichiers")
@@ -90,14 +90,14 @@ def create_timelapse(job_dir, output_path, fps, width, height):
     )
     cmd = [
     "ffmpeg", "-y",
-    "-threads", "1",
     "-f", "concat",
     "-safe", "0",
     "-i", concat_file,
     "-vf", vf,
     "-c:v", "libx264",
-    "-crf", "18",
-    "-preset", "fast",
+    "-threads", "1",
+    "-crf", "23",
+    "-preset", "veryfast",
     "-pix_fmt", "yuv420p",
     "-movflags", "+faststart",
     output_path
