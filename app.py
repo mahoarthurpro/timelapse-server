@@ -21,10 +21,10 @@ def get_job_dir(record_id):
  
  
 def create_timelapse(job_dir, output_path, fps, width, height):
-    # Récupérer les fichiers avec leur nom original pour trier par date+heure
+    # Chercher frame_* ET seq_* pour être compatible avant/après renumérotation
     meta_files = []
     for f in os.listdir(job_dir):
-        if f.startswith("frame_") and f.endswith(".jpg"):
+        if (f.startswith("frame_") or f.startswith("seq_")) and f.endswith(".jpg"):
             name_path = os.path.join(job_dir, f.replace(".jpg", ".name"))
             if os.path.exists(name_path):
                 with open(name_path) as nf:
@@ -32,80 +32,58 @@ def create_timelapse(job_dir, output_path, fps, width, height):
                 meta_files.append((original_name, f))
             else:
                 meta_files.append((f, f))
- 
-    # Tri par nom original (contient date+heure ex: IMG_0211.JPG)
+
     meta_files.sort(key=lambda x: x[0])
     files = [x[1] for x in meta_files]
- 
+
     logger.info(f"Assemblage {len(files)} images triees par date, {width}x{height}")
- 
+
     if len(files) < 2:
         logger.error(f"Pas assez d images: {len(files)}")
         return False
- 
-    # Log de l'ordre pour verification
-    for i, (orig, frame) in enumerate(meta_files[:5]):
-        logger.info(f"  {i+1}. {orig} -> {frame}")
-    if len(meta_files) > 5:
-        logger.info(f"  ... ({len(meta_files)} images au total)")
- 
-    # Renuméroter séquentiellement pour FFmpeg
-    logger.info("Renumerotation des fichiers...")
+
+    # Renuméroter avec un préfixe unique par format pour éviter les conflits
+    prefix = f"vid_{width}x{height}_"
     new_files = []
     for i, fname in enumerate(files):
         old_path = os.path.join(job_dir, fname)
-        new_name = f"seq_{i:05d}.jpg"
+        new_name = f"{prefix}{i:05d}.jpg"
         new_path = os.path.join(job_dir, new_name)
-        os.rename(old_path, new_path)
+        # Copier plutôt que renommer pour garder les fichiers pour le 2ème render
+        import shutil
+        shutil.copy2(old_path, new_path)
         new_files.append(new_name)
     files = new_files
-    logger.info(f"Renumerotation terminee: {len(files)} fichiers")
- 
-    # FPS sécurisé
+    logger.info(f"Copie terminee: {len(files)} fichiers")
+
     if fps <= 0:
         fps = 5
-    logger.info(f"FPS utilise: {fps}, duree par frame: {1.0/fps}")
- 
-    # Créer le fichier concat
+
     concat_file = os.path.join(job_dir, f"concat_{width}.txt")
     with open(concat_file, "w") as f:
         for fname in files:
             fpath = os.path.join(job_dir, fname)
             f.write(f"file '{fpath}'\n")
             f.write(f"duration {1.0/fps}\n")
-        # Répéter la dernière frame pour éviter bug FFmpeg
         f.write(f"file '{os.path.join(job_dir, files[-1])}'\n")
- 
-    # Log du concat
-    logger.info("Contenu concat (3 premieres lignes):")
-    with open(concat_file) as f:
-        lines = f.readlines()
-        for line in lines[:6]:
-            logger.info(f"  {line.strip()}")
- 
+
     vf = (
         f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
         f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
     )
     cmd = [
-        "ffmpeg", "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", concat_file,
-        "-vf", vf,
-        "-c:v", "libx264",
-        "-crf", "18",
-        "-preset", "fast",
-        "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart",
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+        "-i", concat_file, "-vf", vf,
+        "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart",
         output_path
     ]
- 
+
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         logger.error(f"FFmpeg erreur: {result.stderr[-500:]}")
         return False
- 
+
     size = os.path.getsize(output_path)
     logger.info(f"Video creee: {size} bytes")
     return size > 1000
