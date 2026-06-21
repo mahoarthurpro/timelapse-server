@@ -83,10 +83,7 @@ def create_timelapse(job_dir, output_path, fps, width, height):
         for line in lines[:6]:
             logger.info(f"  {line.strip()}")
 
-    vf = (
-        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
-        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
-    )
+    vf = "scale=1280:-1"
     cmd = [
         "ffmpeg", "-y",
         "-f", "concat",
