@@ -103,7 +103,7 @@ def create_timelapse(job_dir, output_path, fps, width, height):
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        logger.error(f"FFmpeg erreur: {result.stderr[-500:]}")
+        logger.error(f"FFmpeg stderr complet:\n{result.stderr}")
         return False
 
     size = os.path.getsize(output_path)
@@ -172,6 +172,10 @@ def add_image():
     try:
         r = requests.get(image_url, timeout=30)
         r.raise_for_status()
+        logger.info(f"Content-Type: {r.headers.get('Content-Type')}")
+        logger.info(f"Status: {r.status_code}")
+        logger.info(f"First bytes: {r.content[:20]}")
+        logger.info(f"Taille image: {len(r.content)} octets")
         frame_path = os.path.join(job_dir, f"frame_{image_index:05d}.jpg")
         with open(frame_path, "wb") as f:
             f.write(r.content)
