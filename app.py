@@ -71,6 +71,12 @@ def create_timelapse(job_dir, output_path, fps, width, height):
         f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
         f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
     )
+ # Vérifier que les fichiers existent vraiment
+for fname in files[:3]:
+    fpath = os.path.join(job_dir, fname)
+    exists = os.path.exists(fpath)
+    logger.info(f"Fichier {fname}: existe={exists}, taille={os.path.getsize(fpath) if exists else 0}")
+ logger.info(f"Commande FFmpeg: {' '.join(cmd)}")
     cmd = [
         "ffmpeg", "-y", "-f", "concat", "-safe", "0",
         "-i", concat_file, "-vf", vf,
