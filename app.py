@@ -83,19 +83,24 @@ def create_timelapse(job_dir, output_path, fps, width, height):
         for line in lines[:6]:
             logger.info(f"  {line.strip()}")
 
-    vf = "scale=1280:-1"
+    vf = (
+    f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+    f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,"
+    f"setsar=1"
+    )
     cmd = [
-        "ffmpeg", "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", concat_file,
-        "-vf", vf,
-        "-c:v", "libx264",
-        "-crf", "18",
-        "-preset", "fast",
-        "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart",
-        output_path
+    "ffmpeg", "-y",
+    "-threads", "1",
+    "-f", "concat",
+    "-safe", "0",
+    "-i", concat_file,
+    "-vf", vf,
+    "-c:v", "libx264",
+    "-crf", "18",
+    "-preset", "fast",
+    "-pix_fmt", "yuv420p",
+    "-movflags", "+faststart",
+    output_path
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
